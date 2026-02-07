@@ -5257,7 +5257,7 @@
     }
 
     // ==============================================
-    // DATA SAVING FUNCTION WITH RESUBMISSION LOGIC AND FIREBASE STORAGE
+    // DATA SAVING FUNCTION WITH RESUBMISSION LOGIC AND ROBUST FIREBASE STORAGE
     // ==============================================
     async function saveData() {
         let position;
@@ -5379,18 +5379,38 @@
         
         let finalPhotoValue = null;
         
-        // Handle photo upload to Firebase Storage
+        // NEW: ROBUST PHOTO HANDLING LOGIC WITH ONLINE CHECK AND FALLBACK
         if (evidencePhoto && evidencePhoto.startsWith('data:')) {
-            try {
-                saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> UPLOADING PHOTO...';
-                finalPhotoValue = await uploadToFirebaseStorage(propertyId, evidencePhoto);
-                logger.addLogEntry(`Photo uploaded to Firebase Storage: ${propertyId}`, "success");
-            } catch (error) {
-                logger.addLogEntry(`Photo upload failed: ${error.message}`, "error");
-                alert(`Photo upload failed: ${error.message}\n\nSaving property without photo...`);
+            // 1. Check if online first
+            if (navigator.onLine) {
+                try {
+                    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> UPLOADING PHOTO...';
+                    
+                    // Create a timeout promise (stop waiting after 10 seconds)
+                    const timeout = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error("Upload timed out")), 10000)
+                    );
+                    
+                    // Race the upload against the timeout
+                    finalPhotoValue = await Promise.race([
+                        uploadToFirebaseStorage(propertyId, evidencePhoto),
+                        timeout
+                    ]);
+                    
+                    logger.addLogEntry(`Photo uploaded to Firebase: ${propertyId}`, "success");
+                } catch (error) {
+                    console.error(error);
+                    logger.addLogEntry(`Upload failed (${error.message}). Saving locally.`, "warning");
+                    // Fallback: Save the Base64 image locally so evidence isn't lost
+                    finalPhotoValue = evidencePhoto; 
+                }
+            } else {
+                // Offline: Save Base64 image locally immediately
+                logger.addLogEntry("Offline: Saving photo locally.", "info");
+                finalPhotoValue = evidencePhoto;
             }
         } else if (existingRecord && existingRecord.photo) {
-            // Keep existing photo URL for resubmission if no new photo was taken
+            // Keep existing photo URL/Data
             finalPhotoValue = existingRecord.photo;
         } else if (existingRecord && existingRecord.evidence) {
             // Handle old base64 evidence field for resubmission
@@ -5428,7 +5448,8 @@
             latitude: position[0].toFixed(6),
             longitude: position[1].toFixed(6),
             coordinates: `${position[0].toFixed(6)}, ${position[1].toFixed(6)}`,
-            photo: finalPhotoValue, // Store Firebase Storage URL instead of base64
+            photo: finalPhotoValue, // Store Firebase Storage URL or local Base64
+            photoStoredIn: finalPhotoValue && finalPhotoValue.startsWith('https://') ? 'firebase' : 'local',
             locationMode: locationMode,
             positionSource: positionSource,
             gpsAccuracy: accuracy ? accuracy.toFixed(1) : null,
@@ -5855,235 +5876,305 @@
                 </td>
             `;
             
-            if (item.status === 'rejected') {
-                row.style.backgroundColor = 'rgba(231, 76, 60, 0.1)';
-                row.style.borderLeft = '3px solid #e74c3c';
-            } else if (item.resubmissionCount && item.resubmissionCount > 0) {
-                row.style.backgroundColor = 'rgba(39, 174, 96, 0.1)';
-                row.style.borderLeft = '3px solid #27ae60';
-            }
-            
-            row.addEventListener('click', (e) => {
-                if (!e.target.tagName === 'BUTTON') {
-                    showPreview(item.id);
-                }
+            row.addEventListener('click', function() {
+                showPreview(item.id);
             });
         });
     }
     
-    function goToLocation(lat, lng) {
-        map.setView([lat, lng], 18);
-        logger.addLogEntry(`Navigated to property coordinates: ${lat}, ${lng}`, "info");
-    }
-    
-    function showPreview(recordId) {
-        const db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
-        const record = db.find(r => r.id === recordId);
+    function showPreview(id) {
+        let db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
+        let item = db.find(d => d.id === id);
+        if (!item) return;
         
-        if (!record) return;
+        let photoHtml = '';
+        if (item.photo) {
+            photoHtml = `
+                <div class="preview-item" style="grid-column: span 2;">
+                    <div class="preview-label">Evidence Photo</div>
+                    <img src="${item.photo}" style="max-width: 150px; border-radius: 8px; margin-top: 5px;">
+                    ${item.photoStoredIn === 'local' ? '<div style="font-size: 0.75rem; color: #f39c12; margin-top: 5px;"><i class="fa-solid fa-info-circle"></i> Stored locally (offline mode)</div>' : ''}
+                </div>
+            `;
+        } else if (item.evidence) {
+            photoHtml = `
+                <div class="preview-item" style="grid-column: span 2;">
+                    <div class="preview-label">Evidence Photo</div>
+                    <img src="${item.evidence}" style="max-width: 150px; border-radius: 8px; margin-top: 5px;">
+                    <div style="font-size: 0.75rem; color: #f39c12; margin-top: 5px;"><i class="fa-solid fa-info-circle"></i> Stored locally (legacy format)</div>
+                </div>
+            `;
+        }
         
-        let syncDisplay = '';
-        if (record.syncStatus) {
-            switch(record.syncStatus) {
+        let rejectionHtml = '';
+        if (item.status === 'rejected' && item.rejectionReason) {
+            rejectionHtml = `
+                <div class="preview-item" style="grid-column: span 2; background: #fdeaea; padding: 10px; border-radius: 8px; margin-top: 10px; border-left: 4px solid #e74c3c;">
+                    <div class="preview-label" style="color: #e74c3c; font-weight: bold;"><i class="fa-solid fa-exclamation-triangle"></i> REJECTED</div>
+                    <div class="preview-value" style="color: #e74c3c;">${item.rejectionReason}</div>
+                    ${item.reviewedBy ? `<div class="preview-value" style="font-size: 0.8rem; margin-top: 5px;"><strong>Reviewed by:</strong> ${item.reviewedBy}</div>` : ''}
+                </div>
+            `;
+        } else if (item.resubmissionCount && item.resubmissionCount > 0) {
+            rejectionHtml = `
+                <div class="preview-item" style="grid-column: span 2; background: #e8f6ef; padding: 10px; border-radius: 8px; margin-top: 10px; border-left: 4px solid #27ae60;">
+                    <div class="preview-label" style="color: #27ae60; font-weight: bold;"><i class="fa-solid fa-rotate"></i> RESUBMITTED (Correction #${item.resubmissionCount})</div>
+                    ${item.previousRejectionReason ? `<div class="preview-value" style="font-size: 0.8rem; margin-top: 5px;"><strong>Previous rejection:</strong> ${item.previousRejectionReason}</div>` : ''}
+                </div>
+            `;
+        }
+        
+        let syncHtml = '';
+        if (item.syncStatus) {
+            let syncColor = '';
+            let syncText = '';
+            switch(item.syncStatus) {
                 case 'synced':
-                    syncDisplay = '<div class="preview-item"><div class="preview-label">Sync Status:</div><div class="preview-value"><span class="sync-status sync-synced"><i class="fa-solid fa-cloud-check"></i> Synced to Firebase</span></div></div>';
-                    if (record.firebaseId) {
-                        syncDisplay += `<div class="preview-item"><div class="preview-label">Firebase ID:</div><div class="preview-value" style="font-size: 0.8rem;">${record.firebaseId}</div></div>`;
-                    }
+                    syncColor = '#27ae60';
+                    syncText = 'Synced to Firebase';
                     break;
                 case 'queued':
-                    syncDisplay = '<div class="preview-item"><div class="preview-label">Sync Status:</div><div class="preview-value"><span class="sync-status sync-queued"><i class="fa-solid fa-clock"></i> Queued for sync</span></div></div>';
+                    syncColor = '#f39c12';
+                    syncText = 'Queued for sync';
                     break;
                 case 'pending':
-                    syncDisplay = '<div class="preview-item"><div class="preview-label">Sync Status:</div><div class="preview-value"><span class="sync-status sync-pending"><i class="fa-solid fa-hourglass-half"></i> Pending sync</span></div></div>';
+                    syncColor = '#f39c12';
+                    syncText = 'Pending sync';
                     break;
+            }
+            if (syncText) {
+                syncHtml = `
+                    <div class="preview-item" style="grid-column: span 2;">
+                        <div class="preview-label">Sync Status</div>
+                        <div class="preview-value" style="color: ${syncColor};">
+                            <i class="fa-solid fa-cloud"></i> ${syncText}
+                        </div>
+                    </div>
+                `;
             }
         }
         
-        let rejectionDisplay = '';
-        if (record.status === 'rejected') {
-            rejectionDisplay = `
-                <div class="preview-item" style="grid-column: span 2;">
-                    <div class="preview-label">Status:</div>
-                    <div class="preview-value">
-                        <span class="sync-status sync-failed">
-                            <i class="fa-solid fa-ban"></i> REJECTED
-                        </span>
-                    </div>
-                </div>
-                <div class="preview-item" style="grid-column: span 2;">
-                    <div class="preview-label">Rejection Reason:</div>
-                    <div class="preview-value" style="color: #e74c3c; font-weight: 500;">
-                        ${record.rejectionReason || 'No reason provided'}
-                    </div>
-                </div>
-                ${record.reviewedBy ? `
-                <div class="preview-item">
-                    <div class="preview-label">Reviewed By:</div>
-                    <div class="preview-value">${record.reviewedBy}</div>
-                </div>
-                ` : ''}
-                ${record.reviewedAt ? `
-                <div class="preview-item">
-                    <div class="preview-label">Reviewed At:</div>
-                    <div class="preview-value">${new Date(record.reviewedAt).toLocaleString()}</div>
-                </div>
-                ` : ''}
-            `;
-        } else if (record.resubmissionCount && record.resubmissionCount > 0) {
-            rejectionDisplay = `
-                <div class="preview-item" style="grid-column: span 2;">
-                    <div class="preview-label">Status:</div>
-                    <div class="preview-value">
-                        <span class="sync-status sync-queued">
-                            <i class="fa-solid fa-rotate"></i> RESUBMITTED (Correction #${record.resubmissionCount})
-                        </span>
-                    </div>
-                </div>
-                ${record.previousRejectionReason ? `
-                <div class="preview-item" style="grid-column: span 2;">
-                    <div class="preview-label">Previous Rejection:</div>
-                    <div class="preview-value">${record.previousRejectionReason}</div>
-                </div>
-                ` : ''}
-            `;
-        }
-        
-        let photoDisplay = '';
-        if (record.photo) {
-            photoDisplay = `
-                <div class="preview-item" style="grid-column: span 2;">
-                    <div class="preview-label">Evidence Photo:</div>
-                    <div class="preview-value">
-                        <img src="${record.photo}" style="max-width: 150px; border-radius: 4px; margin-top: 5px;">
-                    </div>
-                </div>
-            `;
-        } else if (record.evidence) {
-            photoDisplay = `
-                <div class="preview-item" style="grid-column: span 2;">
-                    <div class="preview-label">Evidence Photo:</div>
-                    <div class="preview-value">
-                        <img src="${record.evidence}" style="max-width: 150px; border-radius: 4px; margin-top: 5px;">
-                    </div>
-                </div>
-            `;
-        }
-        
-        const previewContent = `
+        document.getElementById('previewContent').innerHTML = `
             <div class="preview-item">
                 <div class="preview-label">Property ID</div>
-                <div class="preview-value">${record.propertyId}</div>
+                <div class="preview-value">${item.propertyId}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Property Name</div>
-                <div class="preview-value">${record.propertyName || 'Not provided'}</div>
+                <div class="preview-value">${item.propertyName || 'Not provided'}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Registration Type</div>
-                <div class="preview-value">${record.registrationType || 'titled'}</div>
+                <div class="preview-value">${item.registrationType || 'titled'}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Plot Number</div>
-                <div class="preview-value">${record.plotNumber || 'N/A'}</div>
+                <div class="preview-value">${item.plotNumber || 'N/A'}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Block Number</div>
-                <div class="preview-value">${record.blockNumber || 'N/A'}</div>
+                <div class="preview-value">${item.blockNumber || 'N/A'}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">District/City</div>
-                <div class="preview-value">${record.districtCity}</div>
+                <div class="preview-value">${item.districtCity}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Subcounty</div>
-                <div class="preview-value">${record.subcounty}</div>
+                <div class="preview-value">${item.subcounty}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Parish</div>
-                <div class="preview-value">${record.parish}</div>
+                <div class="preview-value">${item.parish}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Village</div>
-                <div class="preview-value">${record.village}</div>
-            </div>
-            <div class="preview-item">
-                <div class="preview-label">Land Use</div>
-                <div class="preview-value">${record.landUse}</div>
-            </div>
-            <div class="preview-item">
-                <div class="preview-label">Price</div>
-                <div class="preview-value">$${record.price}</div>
-            </div>
-            <div class="preview-item">
-                <div class="preview-label">Size</div>
-                <div class="preview-value">${record.size} Ha</div>
-            </div>
-            <div class="preview-item">
-                <div class="preview-label">Rate</div>
-                <div class="preview-value">$${record.rate}/Ha</div>
-            </div>
-            <div class="preview-item">
-                <div class="preview-label">Coordinates</div>
-                <div class="preview-value">${record.coordinates}</div>
-            </div>
-            <div class="preview-item">
-                <div class="preview-label">GPS Accuracy</div>
-                <div class="preview-value">${record.gpsAccuracy || 'N/A'}</div>
+                <div class="preview-value">${item.village}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Data Source</div>
-                <div class="preview-value">${record.dataSource}</div>
+                <div class="preview-value">${item.dataSource}</div>
             </div>
             <div class="preview-item">
+                <div class="preview-label">Land Use</div>
+                <div class="preview-value">${item.landUse}</div>
+            </div>
+            <div class="preview-item">
+                <div class="preview-label">Total Price</div>
+                <div class="preview-value">$${item.price}</div>
+            </div>
+            <div class="preview-item">
+                <div class="preview-label">Size</div>
+                <div class="preview-value">${item.size} Ha</div>
+            </div>
+            <div class="preview-item">
+                <div class="preview-label">Rate per Ha</div>
+                <div class="preview-value">$${item.rate}/Ha</div>
+            </div>
+            <div class="preview-item">
+                <div class="preview-label">Coordinates</div>
+                <div class="preview-value">${item.coordinates}</div>
+            </div>
+            <div class="preview-item">
+                <div class="preview-label">Location Source</div>
+                <div class="preview-value">${item.positionSource}</div>
+            </div>
+            ${item.gpsAccuracy ? `
+            <div class="preview-item">
+                <div class="preview-label">GPS Accuracy</div>
+                <div class="preview-value">${item.gpsAccuracy}m</div>
+            </div>
+            ` : ''}
+            <div class="preview-item">
                 <div class="preview-label">Officer Name</div>
-                <div class="preview-value">${record.officerName}</div>
+                <div class="preview-value">${item.officerName}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Date</div>
-                <div class="preview-value">${record.formattedDate}</div>
+                <div class="preview-value">${item.formattedDate}</div>
             </div>
-            ${record.description ? `
+            ${item.description ? `
             <div class="preview-item" style="grid-column: span 2;">
                 <div class="preview-label">Description</div>
-                <div class="preview-value">${record.description}</div>
+                <div class="preview-value">${item.description}</div>
             </div>
             ` : ''}
-            ${photoDisplay}
-            ${rejectionDisplay}
-            ${syncDisplay}
+            ${photoHtml}
+            ${rejectionHtml}
+            ${syncHtml}
         `;
         
-        document.getElementById('previewContent').innerHTML = previewContent;
         document.getElementById('dataPreview').style.display = 'block';
-        
-        // Scroll to preview
-        document.getElementById('dataPreview').scrollIntoView({ behavior: 'smooth' });
     }
     
     function hidePreview() {
         document.getElementById('dataPreview').style.display = 'none';
     }
+    
+    function goToLocation(lat, lng) {
+        map.setView([lat, lng], 18);
+        logger.addLogEntry(`Map centered on property at ${lat.toFixed(6)}, ${lng.toFixed(6)}`, "info");
+    }
 
     // ==============================================
-    // CACHE FUNCTIONS
+    // EXPORT FUNCTIONS
     // ==============================================
-    function cacheTiles() {
-        if (confirm("Cache visible map area for offline use? This may take a few moments.")) {
-            logger.addLogEntry("Starting map cache...", "info");
-            satellite.cacheTiles();
+    function exportData() {
+        const db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
+        if (db.length === 0) {
+            alert("No data to export.");
+            return;
         }
+        
+        const wb = XLSX.utils.book_new();
+        const ws_data = [
+            ["Property ID", "Property Name", "Registration Type", "Plot Number", "Block Number", 
+             "District/City", "Subcounty", "Parish", "Village", "Description", 
+             "Data Source", "Land Use", "Price ($)", "Size (Ha)", "Rate ($/Ha)", 
+             "Latitude", "Longitude", "GPS Accuracy (m)", "Location Source", 
+             "Officer Name", "Date", "Status", "Rejection Reason", "Sync Status", "Firebase ID"]
+        ];
+        
+        db.forEach(item => {
+            ws_data.push([
+                item.propertyId,
+                item.propertyName || '',
+                item.registrationType || 'titled',
+                item.plotNumber || '',
+                item.blockNumber || '',
+                item.districtCity || '',
+                item.subcounty || '',
+                item.parish || '',
+                item.village || '',
+                item.description || '',
+                item.dataSource || '',
+                item.landUse || '',
+                item.price,
+                item.size,
+                item.rate,
+                item.latitude,
+                item.longitude,
+                item.gpsAccuracy || 'N/A',
+                item.positionSource,
+                item.officerName || '',
+                item.formattedDate,
+                item.status || 'pending',
+                item.rejectionReason || '',
+                item.syncStatus || 'unknown',
+                item.firebaseId || 'N/A'
+            ]);
+        });
+        
+        const ws = XLSX.utils.aoa_to_sheet(ws_data);
+        XLSX.utils.book_append_sheet(wb, ws, "Property Data");
+        
+        const date = new Date().toISOString().slice(0,10);
+        XLSX.writeFile(wb, `lavmis_export_${date}.xlsx`);
+        
+        logger.addLogEntry(`Exported ${db.length} records to Excel`, "success");
     }
     
-    function clearCache() {
-        if (confirm("Clear all cached map tiles? This will free up storage space.")) {
-            logger.addLogEntry("Clearing map cache...", "warning");
-            satellite.clearCache();
+    function exportGeoJSON() {
+        const db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
+        if (db.length === 0) {
+            alert("No data to export.");
+            return;
         }
+        
+        const features = db.map(item => ({
+            type: "Feature",
+            geometry: {
+                type: "Point",
+                coordinates: [parseFloat(item.longitude), parseFloat(item.latitude)]
+            },
+            properties: {
+                propertyId: item.propertyId,
+                propertyName: item.propertyName || '',
+                registrationType: item.registrationType || 'titled',
+                plotNumber: item.plotNumber || '',
+                blockNumber: item.blockNumber || '',
+                districtCity: item.districtCity || '',
+                subcounty: item.subcounty || '',
+                parish: item.parish || '',
+                village: item.village || '',
+                description: item.description || '',
+                dataSource: item.dataSource || '',
+                landUse: item.landUse || '',
+                price: item.price,
+                size: item.size,
+                rate: item.rate,
+                gpsAccuracy: item.gpsAccuracy || null,
+                positionSource: item.positionSource,
+                officerName: item.officerName || '',
+                date: item.formattedDate,
+                status: item.status || 'pending',
+                rejectionReason: item.rejectionReason || '',
+                syncStatus: item.syncStatus || 'unknown',
+                firebaseId: item.firebaseId || null
+            }
+        }));
+        
+        const geoJSON = {
+            type: "FeatureCollection",
+            features: features
+        };
+        
+        const content = JSON.stringify(geoJSON, null, 2);
+        const blob = new Blob([content], { type: 'application/json' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `lavmis_geojson_${new Date().toISOString().slice(0,10)}.geojson`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        
+        logger.addLogEntry(`Exported ${db.length} records as GeoJSON`, "success");
     }
 
     // ==============================================
-    // BACKUP AND RESTORE FUNCTIONS
+    // MODAL FUNCTIONS
     // ==============================================
     function showBackupModal() {
         document.getElementById('backupModal').style.display = 'flex';
@@ -6094,166 +6185,188 @@
     }
     
     function hideModal() {
-        document.querySelectorAll('.modal-overlay').forEach(modal => {
-            modal.style.display = 'none';
-        });
+        document.getElementById('backupModal').style.display = 'none';
+        document.getElementById('restoreModal').style.display = 'none';
     }
     
     function backupData(format) {
-        if (storageManager) {
-            storageManager.backupData(format);
-        }
-        hideModal();
-    }
-    
-    function backupToFirebase() {
-        if (firebaseDataManager) {
-            firebaseDataManager.backupAllToFirebase()
-                .then(result => {
-                    logger.addLogEntry(`Backup to Firebase completed: ${result.recordCount} records`, "success");
-                })
-                .catch(error => {
-                    logger.addLogEntry(`Backup to Firebase failed: ${error.message}`, "error");
-                });
-        }
+        storageManager.backupData(format);
         hideModal();
     }
     
     function restoreData() {
         const fileInput = document.getElementById('restoreFile');
-        if (fileInput.files.length > 0) {
-            if (storageManager) {
-                storageManager.restoreData(fileInput.files[0]);
-            }
-        } else {
+        if (fileInput.files.length === 0) {
             alert("Please select a backup file first.");
+            return;
+        }
+        
+        if (!confirm("This will replace all existing data. Are you sure?")) {
+            return;
+        }
+        
+        storageManager.restoreData(fileInput.files[0]);
+        hideModal();
+    }
+    
+    function backupToFirebase() {
+        if (!firebaseDataManager || !firebaseDataManager.userId) {
+            alert("Please log in to backup to Firebase.");
+            hideModal();
+            return;
+        }
+        
+        if (confirm("This will backup all your data to Firebase Cloud. Continue?")) {
+            firebaseDataManager.backupAllToFirebase()
+                .then(result => {
+                    alert(`Backup completed successfully!\n\nRecord count: ${result.recordCount}\nSynced: ${result.syncedCount}\nBackup ID: ${result.backupId}`);
+                })
+                .catch(error => {
+                    alert(`Backup failed: ${error.message}`);
+                });
         }
         hideModal();
     }
     
-    async function restoreFromFirebase() {
-        if (firebaseDataManager) {
-            try {
-                await firebaseDataManager.restoreFromFirebase();
-            } catch (error) {
-                logger.addLogEntry(`Firebase restore failed: ${error.message}`, "error");
-            }
+    function restoreFromFirebase() {
+        if (!firebaseDataManager || !firebaseDataManager.userId) {
+            alert("Please log in to restore from Firebase.");
+            hideModal();
+            return;
         }
+        
+        firebaseDataManager.restoreFromFirebase()
+            .then(result => {
+                alert(`Restored ${result.recordCount} records from Firebase successfully!`);
+            })
+            .catch(error => {
+                alert(`Restore failed: ${error.message}`);
+            });
         hideModal();
-    }
-    
-    async function syncAllToFirebase() {
-        if (firebaseDataManager) {
-            await firebaseDataManager.syncAllToFirebase();
-        }
     }
     
     function clearAllData() {
-        if (storageManager) {
-            storageManager.clearAllData();
+        storageManager.clearAllData();
+    }
+    
+    function clearLog() {
+        logger.clearLog();
+    }
+
+    // ==============================================
+    // MAP CACHE FUNCTIONS
+    // ==============================================
+    function cacheTiles() {
+        const bounds = map.getBounds();
+        const zoom = map.getZoom();
+        
+        if (satellite.cache) {
+            satellite.cacheArea(bounds, zoom);
+            logger.addLogEntry("Caching visible map area for offline use", "info");
+            document.getElementById('cache-status').innerHTML = '<i class="fa-solid fa-sync fa-spin"></i> Caching in progress...';
+            
+            setTimeout(() => {
+                if (satellite.cache) {
+                    const usage = satellite.cache.getStorageUsed();
+                    document.getElementById('cache-status').innerHTML = `<i class="fa-solid fa-hard-drive"></i> Storage Used: ${(usage / 1024 / 1024).toFixed(2)} MB`;
+                }
+            }, 2000);
+        }
+    }
+    
+    function clearCache() {
+        if (satellite.cache) {
+            satellite.cache.clear();
+            logger.addLogEntry("Map cache cleared", "warning");
+            document.getElementById('cache-status').innerHTML = '<i class="fa-solid fa-hard-drive"></i> Storage Used: 0 MB';
         }
     }
 
     // ==============================================
-    // EXPORT FUNCTIONS
+    // INITIALIZATION
     // ==============================================
-    function exportData() {
-        if (storageManager) {
-            storageManager.backupData('csv');
-        }
-    }
-    
-    function exportGeoJSON() {
-        const db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
+    document.addEventListener('DOMContentLoaded', function() {
+        loginSystem = new LoginSystem();
         
-        const geoJson = {
-            type: "FeatureCollection",
-            features: db.map(item => ({
-                type: "Feature",
-                properties: {
-                    propertyId: item.propertyId,
-                    propertyName: item.propertyName || '',
-                    registrationType: item.registrationType || '',
-                    plotNumber: item.plotNumber || '',
-                    blockNumber: item.blockNumber || '',
-                    districtCity: item.districtCity || '',
-                    subcounty: item.subcounty || '',
-                    parish: item.parish || '',
-                    village: item.village || '',
-                    description: item.description || '',
-                    dataSource: item.dataSource || '',
-                    landUse: item.landUse,
-                    price: item.price,
-                    size: item.size,
-                    rate: item.rate,
-                    officerName: item.officerName || '',
-                    status: item.status || 'pending',
-                    rejectionReason: item.rejectionReason || '',
-                    syncStatus: item.syncStatus || 'unknown',
-                    firebaseId: item.firebaseId || 'N/A'
-                },
-                geometry: {
-                    type: "Point",
-                    coordinates: [parseFloat(item.longitude), parseFloat(item.latitude)]
-                }
-            }))
+        // Set up global functions for button onclick handlers
+        window.attemptLogin = function() {
+            loginSystem.attemptFirebaseLogin();
         };
         
-        const content = JSON.stringify(geoJson, null, 2);
-        const filename = `lavmis_properties_${new Date().toISOString().slice(0,10)}.geojson`;
-        
-        const blob = new Blob([content], { type: 'application/json' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-        
-        logger.addLogEntry("Property data exported as GeoJSON", "success");
-    }
-
-    // ==============================================
-    // CLEAR LOG FUNCTION
-    // ==============================================
-    function clearLog() {
-        if (logger) {
-            logger.clearLog();
-        }
-    }
-
-    // ==============================================
-    // INITIALIZE APPLICATION
-    // ==============================================
-    function attemptLogin() {
-        if (loginSystem) {
-            loginSystem.attemptFirebaseLogin();
-        }
-    }
-    
-    function initiateLogout() {
-        if (loginSystem) {
+        window.initiateLogout = function() {
             loginSystem.initiateLogout();
-        }
-    }
-    
-    function cancelBackup() {
-        if (loginSystem) {
-            loginSystem.cancelBackup();
-        }
-    }
-    
-    function finishLogout() {
-        if (loginSystem) {
+        };
+        
+        window.finishLogout = function() {
             loginSystem.finishLogout();
+        };
+        
+        window.cancelBackup = function() {
+            loginSystem.cancelBackup();
+        };
+        
+        window.setRegistrationType = setRegistrationType;
+        window.toggleManualEntry = toggleManualEntry;
+        window.setLocationMode = setLocationMode;
+        window.clearManualPoint = clearManualPoint;
+        window.capturePhoto = capturePhoto;
+        window.handlePhotoUpload = handlePhotoUpload;
+        window.removePhoto = removePhoto;
+        window.saveData = saveData;
+        window.cacheTiles = cacheTiles;
+        window.clearCache = clearCache;
+        window.centerOnGPS = centerOnGPS;
+        window.toggleAutoCenter = toggleAutoCenter;
+        window.clearAllMarkers = clearAllMarkers;
+        window.showPreview = showPreview;
+        window.hidePreview = hidePreview;
+        window.goToLocation = goToLocation;
+        window.showBackupModal = showBackupModal;
+        window.showRestoreModal = showRestoreModal;
+        window.hideModal = hideModal;
+        window.backupData = backupData;
+        window.restoreData = restoreData;
+        window.backupToFirebase = backupToFirebase;
+        window.restoreFromFirebase = restoreFromFirebase;
+        window.clearAllData = clearAllData;
+        window.clearLog = clearLog;
+        window.exportData = exportData;
+        window.exportGeoJSON = exportGeoJSON;
+        window.loadRejectedPropertyIntoForm = loadRejectedPropertyIntoForm;
+        window.hideRejectionFeedback = hideRejectionFeedback;
+        window.syncAllToFirebase = function() {
+            if (firebaseDataManager) {
+                firebaseDataManager.syncAllToFirebase();
+            } else {
+                alert("Firebase not initialized. Please log in.");
+            }
+        };
+        window.showAllNotifications = showAllNotifications;
+        
+        // Add update functions for geographical dropdowns
+        window.updateSubcounties = updateSubcounties;
+        window.updateParishes = updateParishes;
+        window.updateVillages = updateVillages;
+        
+        // Set up network status indicator
+        window.addEventListener('online', () => {
+            document.getElementById('net-label').className = 'indicator on';
+            document.getElementById('net-label').textContent = 'ONLINE';
+        });
+        
+        window.addEventListener('offline', () => {
+            document.getElementById('net-label').className = 'indicator off';
+            document.getElementById('net-label').textContent = 'OFFLINE';
+        });
+        
+        // Initialize network status
+        if (navigator.onLine) {
+            document.getElementById('net-label').className = 'indicator on';
+            document.getElementById('net-label').textContent = 'ONLINE';
+        } else {
+            document.getElementById('net-label').className = 'indicator off';
+            document.getElementById('net-label').textContent = 'OFFLINE';
         }
-    }
-    
-    // Initialize login system when page loads
-    window.addEventListener('DOMContentLoaded', function() {
-        loginSystem = new LoginSystem();
     });
 </script>
 </body>
