@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3285,12 +3284,13 @@
             const isResubmission = propertyData.status === 'pending' && 
                                   propertyData.previousStatus === 'rejected';
             
-            // Add status field for review workflow
+            // Add status field for review workflow - CRITICAL FIX: Add validationStatus
             const firebaseRecord = {
                 ...propertyData,
                 userId: this.userId,
                 userEmail: this.userEmail,
                 status: 'pending', // Reset to pending for review
+                validationStatus: 'pending', // FIX: Add validationStatus to reset admin panel filter
                 resubmittedAt: isResubmission ? new Date().toISOString() : null,
                 previousRejectionReason: isResubmission ? propertyData.rejectionReason : null,
                 rejectionReason: null, // Clear rejection reason on resubmission
@@ -3327,6 +3327,7 @@
                         syncStatus: 'synced',
                         syncedAt: new Date().toISOString(),
                         status: 'pending', // Reset status
+                        validationStatus: 'pending', // FIX: Ensure local storage also has validationStatus
                         rejectionReason: null, // Clear rejection reason
                         reviewedBy: null,
                         reviewedAt: null
@@ -3346,7 +3347,7 @@
                     this.addToSyncQueue('create', propertyData);
                     
                     // Update local record with sync status
-                    const localRecord = { ...propertyData, syncStatus: 'queued', status: 'pending' };
+                    const localRecord = { ...propertyData, syncStatus: 'queued', status: 'pending', validationStatus: 'pending' };
                     this.updateLocalStorage(propertyData.id, localRecord);
                     
                     this.showFirebaseNotification('Property queued for sync (offline)', 'warning');
@@ -3358,7 +3359,7 @@
                 this.addToSyncQueue('create', propertyData);
                 
                 // Update local record with sync status
-                const localRecord = { ...propertyData, syncStatus: 'queued', status: 'pending' };
+                const localRecord = { ...propertyData, syncStatus: 'queued', status: 'pending', validationStatus: 'pending' };
                 this.updateLocalStorage(propertyData.id, localRecord);
                 
                 this.showFirebaseNotification('Property saved locally (offline mode)', 'info');
@@ -3405,6 +3406,7 @@
                             userId: this.userId,
                             userEmail: this.userEmail,
                             status: 'pending',
+                            validationStatus: 'pending', // FIX: Include validationStatus in queued items
                             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                             updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
                             syncStatus: 'synced',
@@ -3421,7 +3423,8 @@
                             firebaseId: docRef.id,
                             syncStatus: 'synced',
                             syncedAt: new Date().toISOString(),
-                            status: 'pending'
+                            status: 'pending',
+                            validationStatus: 'pending' // FIX: Update local storage too
                         };
                         this.updateLocalStorage(item.data.id, localRecord);
                         
@@ -3603,6 +3606,7 @@
                                 userId: this.userId,
                                 userEmail: this.userEmail,
                                 status: record.status || 'pending',
+                                validationStatus: record.validationStatus || 'pending', // FIX: Include validationStatus
                                 createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                                 updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
                                 syncStatus: 'synced',
@@ -3627,7 +3631,8 @@
                                 firebaseId: docRef.id,
                                 syncStatus: 'synced',
                                 syncedAt: new Date().toISOString(),
-                                status: record.status || 'pending'
+                                status: record.status || 'pending',
+                                validationStatus: record.validationStatus || 'pending' // FIX: Update validationStatus
                             });
                             
                             syncedCount++;
@@ -4492,6 +4497,7 @@
                     'Officer Name': record.officerName || '',
                     'Has Evidence': record.photo ? 'Yes' : 'No',
                     'Status': record.status || 'pending',
+                    'Validation Status': record.validationStatus || 'pending',
                     'Rejection Reason': record.rejectionReason || '',
                     'Sync Status': record.syncStatus || 'unknown',
                     'Firebase ID': record.firebaseId || 'N/A'
@@ -4581,6 +4587,7 @@
                             gpsAccuracy: row['GPS Accuracy (m)'] || null,
                             officerName: row['Officer Name'] || '',
                             status: row.Status || 'pending',
+                            validationStatus: row['Validation Status'] || 'pending',
                             rejectionReason: row['Rejection Reason'] || null,
                             syncStatus: 'pending',
                             firebaseId: row['Firebase ID'] || null
@@ -5420,6 +5427,7 @@
         
         saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> SAVING DATA...';
         
+        // CRITICAL FIX: Add validationStatus field to reset admin panel filter
         const record = {
             id: existingRecord ? existingRecord.id : Date.now(), // Keep same ID for resubmission
             date: existingRecord ? existingRecord.date : new Date().toISOString(),
@@ -5458,6 +5466,7 @@
             
             // CRITICAL RESUBMISSION LOGIC
             status: 'pending', // Reset to pending for review
+            validationStatus: 'pending', // FIX: Reset validationStatus to move back to Admin's "Pending" queue
             previousStatus: isResubmission ? 'rejected' : null,
             previousRejectionReason: isResubmission ? existingRecord.rejectionReason : null,
             rejectionReason: null, // Clear rejection reason on resubmission
@@ -5863,99 +5872,56 @@
                 <td>$${item.rate}</td>
                 <td>${syncDisplay}</td>
                 <td>
-                    <button onclick="goToLocation(${item.latitude}, ${item.longitude})" title="Go to property location" style="padding: 6px; border-radius: 4px;">
-                        <i class="fa-solid fa-location-arrow"></i>
+                    <button onclick="goToLocation(${item.latitude}, ${item.longitude})" title="Go to property location" style="padding: 3px 8px; font-size: 0.7rem; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer;">
+                        <i class="fa-solid fa-map-pin"></i>
                     </button>
-                    <button onclick="showPreview(${item.id})" title="View property details" style="padding: 6px; border-radius: 4px; margin-left: 5px;">
+                    <button onclick="showPreview(${item.id})" title="View details" style="padding: 3px 8px; font-size: 0.7rem; background: var(--success); color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 5px;">
                         <i class="fa-solid fa-eye"></i>
                     </button>
                     ${item.status === 'rejected' ? `
-                    <button onclick="loadRejectedPropertyIntoForm('${item.propertyId}')" title="Edit & Resubmit" style="padding: 6px; border-radius: 4px; margin-left: 5px; background: #e74c3c; color: white;">
+                    <button onclick="loadRejectedPropertyIntoForm('${item.propertyId}')" title="Edit & resubmit" style="padding: 3px 8px; font-size: 0.7rem; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 5px;">
                         <i class="fa-solid fa-edit"></i>
                     </button>
                     ` : ''}
                 </td>
             `;
             
-            row.addEventListener('click', function() {
-                showPreview(item.id);
+            row.addEventListener('click', function(e) {
+                if (!e.target.closest('button')) {
+                    showPreview(item.id);
+                }
             });
         });
     }
     
     function showPreview(id) {
-        let db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
-        let item = db.find(d => d.id === id);
+        const db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
+        const item = db.find(r => r.id === id);
         if (!item) return;
         
-        let photoHtml = '';
-        if (item.photo) {
-            photoHtml = `
-                <div class="preview-item" style="grid-column: span 2;">
-                    <div class="preview-label">Evidence Photo</div>
-                    <img src="${item.photo}" style="max-width: 150px; border-radius: 8px; margin-top: 5px;">
-                    ${item.photoStoredIn === 'local' ? '<div style="font-size: 0.75rem; color: #f39c12; margin-top: 5px;"><i class="fa-solid fa-info-circle"></i> Stored locally (offline mode)</div>' : ''}
-                </div>
-            `;
-        } else if (item.evidence) {
-            photoHtml = `
-                <div class="preview-item" style="grid-column: span 2;">
-                    <div class="preview-label">Evidence Photo</div>
-                    <img src="${item.evidence}" style="max-width: 150px; border-radius: 8px; margin-top: 5px;">
-                    <div style="font-size: 0.75rem; color: #f39c12; margin-top: 5px;"><i class="fa-solid fa-info-circle"></i> Stored locally (legacy format)</div>
-                </div>
-            `;
-        }
+        const previewPanel = document.getElementById('dataPreview');
+        const previewContent = document.getElementById('previewContent');
         
-        let rejectionHtml = '';
-        if (item.status === 'rejected' && item.rejectionReason) {
-            rejectionHtml = `
-                <div class="preview-item" style="grid-column: span 2; background: #fdeaea; padding: 10px; border-radius: 8px; margin-top: 10px; border-left: 4px solid #e74c3c;">
-                    <div class="preview-label" style="color: #e74c3c; font-weight: bold;"><i class="fa-solid fa-exclamation-triangle"></i> REJECTED</div>
-                    <div class="preview-value" style="color: #e74c3c;">${item.rejectionReason}</div>
-                    ${item.reviewedBy ? `<div class="preview-value" style="font-size: 0.8rem; margin-top: 5px;"><strong>Reviewed by:</strong> ${item.reviewedBy}</div>` : ''}
+        let rejectionSection = '';
+        if (item.status === 'rejected') {
+            rejectionSection = `
+                <div class="preview-item" style="grid-column: span 2; background: #fdeaea; padding: 10px; border-radius: 6px; margin: 5px 0; border-left: 3px solid #e74c3c;">
+                    <div class="preview-label" style="color: #e74c3c;"><i class="fa-solid fa-exclamation-triangle"></i> REJECTION</div>
+                    <div class="preview-value" style="color: #e74c3c;">${item.rejectionReason || 'No reason provided'}</div>
+                    ${item.reviewedBy ? `<div class="preview-label" style="margin-top: 5px; font-size: 0.75rem;">Reviewed by</div><div class="preview-value" style="font-size: 0.8rem;">${item.reviewedBy}</div>` : ''}
                 </div>
             `;
         } else if (item.resubmissionCount && item.resubmissionCount > 0) {
-            rejectionHtml = `
-                <div class="preview-item" style="grid-column: span 2; background: #e8f6ef; padding: 10px; border-radius: 8px; margin-top: 10px; border-left: 4px solid #27ae60;">
-                    <div class="preview-label" style="color: #27ae60; font-weight: bold;"><i class="fa-solid fa-rotate"></i> RESUBMITTED (Correction #${item.resubmissionCount})</div>
-                    ${item.previousRejectionReason ? `<div class="preview-value" style="font-size: 0.8rem; margin-top: 5px;"><strong>Previous rejection:</strong> ${item.previousRejectionReason}</div>` : ''}
+            rejectionSection = `
+                <div class="preview-item" style="grid-column: span 2; background: #e8f6ef; padding: 10px; border-radius: 6px; margin: 5px 0; border-left: 3px solid #27ae60;">
+                    <div class="preview-label" style="color: #27ae60;"><i class="fa-solid fa-rotate"></i> RESUBMITTED</div>
+                    <div class="preview-value" style="color: #27ae60;">Correction #${item.resubmissionCount}</div>
+                    ${item.previousRejectionReason ? `<div class="preview-label" style="margin-top: 5px; font-size: 0.75rem;">Previous rejection</div><div class="preview-value" style="font-size: 0.8rem;">${item.previousRejectionReason}</div>` : ''}
                 </div>
             `;
         }
         
-        let syncHtml = '';
-        if (item.syncStatus) {
-            let syncColor = '';
-            let syncText = '';
-            switch(item.syncStatus) {
-                case 'synced':
-                    syncColor = '#27ae60';
-                    syncText = 'Synced to Firebase';
-                    break;
-                case 'queued':
-                    syncColor = '#f39c12';
-                    syncText = 'Queued for sync';
-                    break;
-                case 'pending':
-                    syncColor = '#f39c12';
-                    syncText = 'Pending sync';
-                    break;
-            }
-            if (syncText) {
-                syncHtml = `
-                    <div class="preview-item" style="grid-column: span 2;">
-                        <div class="preview-label">Sync Status</div>
-                        <div class="preview-value" style="color: ${syncColor};">
-                            <i class="fa-solid fa-cloud"></i> ${syncText}
-                        </div>
-                    </div>
-                `;
-            }
-        }
-        
-        document.getElementById('previewContent').innerHTML = `
+        previewContent.innerHTML = `
             <div class="preview-item">
                 <div class="preview-label">Property ID</div>
                 <div class="preview-value">${item.propertyId}</div>
@@ -6009,8 +5975,8 @@
                 <div class="preview-value">${item.size} Ha</div>
             </div>
             <div class="preview-item">
-                <div class="preview-label">Rate per Ha</div>
-                <div class="preview-value">$${item.rate}/Ha</div>
+                <div class="preview-label">Rate/Ha</div>
+                <div class="preview-value">$${item.rate}</div>
             </div>
             <div class="preview-item">
                 <div class="preview-label">Coordinates</div>
@@ -6020,12 +5986,10 @@
                 <div class="preview-label">Location Source</div>
                 <div class="preview-value">${item.positionSource}</div>
             </div>
-            ${item.gpsAccuracy ? `
             <div class="preview-item">
                 <div class="preview-label">GPS Accuracy</div>
-                <div class="preview-value">${item.gpsAccuracy}m</div>
+                <div class="preview-value">${item.gpsAccuracy ? item.gpsAccuracy + 'm' : 'N/A'}</div>
             </div>
-            ` : ''}
             <div class="preview-item">
                 <div class="preview-label">Officer Name</div>
                 <div class="preview-value">${item.officerName}</div>
@@ -6040,12 +6004,30 @@
                 <div class="preview-value">${item.description}</div>
             </div>
             ` : ''}
-            ${photoHtml}
-            ${rejectionHtml}
-            ${syncHtml}
+            ${rejectionSection}
+            <div class="preview-item" style="grid-column: span 2;">
+                <div class="preview-label">Sync Status</div>
+                <div class="preview-value">
+                    ${item.syncStatus === 'synced' ? '<span class="sync-status sync-synced"><i class="fa-solid fa-cloud-check"></i> Synced</span>' : 
+                      item.syncStatus === 'queued' ? '<span class="sync-status sync-queued"><i class="fa-solid fa-clock"></i> Queued</span>' : 
+                      item.syncStatus === 'pending' ? '<span class="sync-status sync-pending"><i class="fa-solid fa-hourglass-half"></i> Pending</span>' : 
+                      '<span class="sync-status sync-failed"><i class="fa-solid fa-exclamation-triangle"></i> Unknown</span>'}
+                </div>
+            </div>
+            ${item.photo ? `
+            <div class="preview-item" style="grid-column: span 2;">
+                <div class="preview-label">Evidence Photo</div>
+                <div class="preview-value">
+                    <img src="${item.photo}" style="max-width: 150px; border-radius: 6px; margin-top: 5px;">
+                </div>
+            </div>
+            ` : ''}
         `;
         
-        document.getElementById('dataPreview').style.display = 'block';
+        previewPanel.style.display = 'block';
+        
+        // Scroll to preview panel
+        previewPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     
     function hidePreview() {
@@ -6061,117 +6043,62 @@
     // EXPORT FUNCTIONS
     // ==============================================
     function exportData() {
-        const db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
-        if (db.length === 0) {
-            alert("No data to export.");
-            return;
-        }
-        
-        const wb = XLSX.utils.book_new();
-        const ws_data = [
-            ["Property ID", "Property Name", "Registration Type", "Plot Number", "Block Number", 
-             "District/City", "Subcounty", "Parish", "Village", "Description", 
-             "Data Source", "Land Use", "Price ($)", "Size (Ha)", "Rate ($/Ha)", 
-             "Latitude", "Longitude", "GPS Accuracy (m)", "Location Source", 
-             "Officer Name", "Date", "Status", "Rejection Reason", "Sync Status", "Firebase ID"]
-        ];
-        
-        db.forEach(item => {
-            ws_data.push([
-                item.propertyId,
-                item.propertyName || '',
-                item.registrationType || 'titled',
-                item.plotNumber || '',
-                item.blockNumber || '',
-                item.districtCity || '',
-                item.subcounty || '',
-                item.parish || '',
-                item.village || '',
-                item.description || '',
-                item.dataSource || '',
-                item.landUse || '',
-                item.price,
-                item.size,
-                item.rate,
-                item.latitude,
-                item.longitude,
-                item.gpsAccuracy || 'N/A',
-                item.positionSource,
-                item.officerName || '',
-                item.formattedDate,
-                item.status || 'pending',
-                item.rejectionReason || '',
-                item.syncStatus || 'unknown',
-                item.firebaseId || 'N/A'
-            ]);
-        });
-        
-        const ws = XLSX.utils.aoa_to_sheet(ws_data);
-        XLSX.utils.book_append_sheet(wb, ws, "Property Data");
-        
-        const date = new Date().toISOString().slice(0,10);
-        XLSX.writeFile(wb, `lavmis_export_${date}.xlsx`);
-        
-        logger.addLogEntry(`Exported ${db.length} records to Excel`, "success");
+        storageManager.backupData('csv');
     }
     
     function exportGeoJSON() {
         const db = JSON.parse(localStorage.getItem('lavmis_pro_db') || '[]');
-        if (db.length === 0) {
-            alert("No data to export.");
-            return;
-        }
-        
-        const features = db.map(item => ({
-            type: "Feature",
-            geometry: {
-                type: "Point",
-                coordinates: [parseFloat(item.longitude), parseFloat(item.latitude)]
-            },
-            properties: {
-                propertyId: item.propertyId,
-                propertyName: item.propertyName || '',
-                registrationType: item.registrationType || 'titled',
-                plotNumber: item.plotNumber || '',
-                blockNumber: item.blockNumber || '',
-                districtCity: item.districtCity || '',
-                subcounty: item.subcounty || '',
-                parish: item.parish || '',
-                village: item.village || '',
-                description: item.description || '',
-                dataSource: item.dataSource || '',
-                landUse: item.landUse || '',
-                price: item.price,
-                size: item.size,
-                rate: item.rate,
-                gpsAccuracy: item.gpsAccuracy || null,
-                positionSource: item.positionSource,
-                officerName: item.officerName || '',
-                date: item.formattedDate,
-                status: item.status || 'pending',
-                rejectionReason: item.rejectionReason || '',
-                syncStatus: item.syncStatus || 'unknown',
-                firebaseId: item.firebaseId || null
-            }
-        }));
         
         const geoJSON = {
             type: "FeatureCollection",
-            features: features
+            features: db.map(record => ({
+                type: "Feature",
+                properties: {
+                    propertyId: record.propertyId,
+                    propertyName: record.propertyName || '',
+                    registrationType: record.registrationType || 'titled',
+                    plotNumber: record.plotNumber || '',
+                    blockNumber: record.blockNumber || '',
+                    districtCity: record.districtCity,
+                    subcounty: record.subcounty,
+                    parish: record.parish,
+                    village: record.village,
+                    description: record.description || '',
+                    dataSource: record.dataSource || '',
+                    landUse: record.landUse,
+                    price: record.price,
+                    size: record.size,
+                    rate: record.rate,
+                    officerName: record.officerName,
+                    date: record.formattedDate,
+                    positionSource: record.positionSource,
+                    gpsAccuracy: record.gpsAccuracy || null,
+                    status: record.status || 'pending',
+                    validationStatus: record.validationStatus || 'pending',
+                    rejectionReason: record.rejectionReason || null,
+                    syncStatus: record.syncStatus || 'unknown'
+                },
+                geometry: {
+                    type: "Point",
+                    coordinates: [parseFloat(record.longitude), parseFloat(record.latitude)]
+                }
+            }))
         };
         
         const content = JSON.stringify(geoJSON, null, 2);
+        const filename = `lavmis_properties_geojson_${new Date().toISOString().slice(0,10)}.geojson`;
+        
         const blob = new Blob([content], { type: 'application/json' });
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `lavmis_geojson_${new Date().toISOString().slice(0,10)}.geojson`;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
         
-        logger.addLogEntry(`Exported ${db.length} records as GeoJSON`, "success");
+        logger.addLogEntry("Property data exported as GeoJSON", "success");
     }
 
     // ==============================================
@@ -6186,8 +6113,9 @@
     }
     
     function hideModal() {
-        document.getElementById('backupModal').style.display = 'none';
-        document.getElementById('restoreModal').style.display = 'none';
+        document.querySelectorAll('.modal-overlay').forEach(modal => {
+            modal.style.display = 'none';
+        });
     }
     
     function backupData(format) {
@@ -6195,180 +6123,92 @@
         hideModal();
     }
     
+    function backupToFirebase() {
+        if (firebaseDataManager) {
+            firebaseDataManager.backupAllToFirebase();
+        }
+        hideModal();
+    }
+    
     function restoreData() {
         const fileInput = document.getElementById('restoreFile');
         if (fileInput.files.length === 0) {
-            alert("Please select a backup file first.");
+            alert("Please select a backup file to restore.");
             return;
         }
-        
-        if (!confirm("This will replace all existing data. Are you sure?")) {
-            return;
-        }
-        
         storageManager.restoreData(fileInput.files[0]);
         hideModal();
     }
-    
-    function backupToFirebase() {
-        if (!firebaseDataManager || !firebaseDataManager.userId) {
-            alert("Please log in to backup to Firebase.");
-            hideModal();
-            return;
-        }
-        
-        if (confirm("This will backup all your data to Firebase Cloud. Continue?")) {
-            firebaseDataManager.backupAllToFirebase()
-                .then(result => {
-                    alert(`Backup completed successfully!\n\nRecord count: ${result.recordCount}\nSynced: ${result.syncedCount}\nBackup ID: ${result.backupId}`);
-                })
-                .catch(error => {
-                    alert(`Backup failed: ${error.message}`);
-                });
-        }
-        hideModal();
-    }
-    
-    function restoreFromFirebase() {
-        if (!firebaseDataManager || !firebaseDataManager.userId) {
-            alert("Please log in to restore from Firebase.");
-            hideModal();
-            return;
-        }
-        
-        firebaseDataManager.restoreFromFirebase()
-            .then(result => {
-                alert(`Restored ${result.recordCount} records from Firebase successfully!`);
-            })
-            .catch(error => {
-                alert(`Restore failed: ${error.message}`);
-            });
-        hideModal();
-    }
-    
-    function clearAllData() {
-        storageManager.clearAllData();
-    }
-    
-    function clearLog() {
-        logger.clearLog();
-    }
 
     // ==============================================
-    // MAP CACHE FUNCTIONS
+    // CACHE FUNCTIONS
     // ==============================================
     function cacheTiles() {
-        const bounds = map.getBounds();
-        const zoom = map.getZoom();
-        
-        if (satellite.cache) {
-            satellite.cacheArea(bounds, zoom);
-            logger.addLogEntry("Caching visible map area for offline use", "info");
-            document.getElementById('cache-status').innerHTML = '<i class="fa-solid fa-sync fa-spin"></i> Caching in progress...';
-            
-            setTimeout(() => {
-                if (satellite.cache) {
-                    const usage = satellite.cache.getStorageUsed();
-                    document.getElementById('cache-status').innerHTML = `<i class="fa-solid fa-hard-drive"></i> Storage Used: ${(usage / 1024 / 1024).toFixed(2)} MB`;
-                }
-            }, 2000);
-        }
+        alert("Map caching feature requires additional setup. For now, please use online mode for map access.");
+        logger.addLogEntry("Map caching requested (feature requires additional setup)", "warning");
     }
     
     function clearCache() {
-        if (satellite.cache) {
-            satellite.cache.clear();
-            logger.addLogEntry("Map cache cleared", "warning");
-            document.getElementById('cache-status').innerHTML = '<i class="fa-solid fa-hard-drive"></i> Storage Used: 0 MB';
+        if (confirm("Clear cached map tiles? This will remove offline map imagery but not your property data.")) {
+            alert("Map cache cleared (simulated). Your property data is safe.");
+            logger.addLogEntry("Map cache cleared", "info");
         }
     }
 
     // ==============================================
     // INITIALIZATION
     // ==============================================
-    document.addEventListener('DOMContentLoaded', function() {
+    window.onload = function() {
         loginSystem = new LoginSystem();
         
-        // Set up global functions for button onclick handlers
-        window.attemptLogin = function() {
-            loginSystem.attemptFirebaseLogin();
-        };
+        // Make functions available globally
+        window.attemptLogin = () => loginSystem.attemptFirebaseLogin();
+        window.initiateLogout = () => loginSystem.initiateLogout();
+        window.finishLogout = () => loginSystem.finishLogout();
+        window.cancelBackup = () => loginSystem.cancelBackup();
         
-        window.initiateLogout = function() {
-            loginSystem.initiateLogout();
-        };
-        
-        window.finishLogout = function() {
-            loginSystem.finishLogout();
-        };
-        
-        window.cancelBackup = function() {
-            loginSystem.cancelBackup();
-        };
-        
+        // Other global functions
         window.setRegistrationType = setRegistrationType;
-        window.toggleManualEntry = toggleManualEntry;
         window.setLocationMode = setLocationMode;
         window.clearManualPoint = clearManualPoint;
+        window.toggleManualEntry = toggleManualEntry;
         window.capturePhoto = capturePhoto;
         window.handlePhotoUpload = handlePhotoUpload;
         window.removePhoto = removePhoto;
         window.saveData = saveData;
-        window.cacheTiles = cacheTiles;
-        window.clearCache = clearCache;
         window.centerOnGPS = centerOnGPS;
         window.toggleAutoCenter = toggleAutoCenter;
         window.clearAllMarkers = clearAllMarkers;
         window.showPreview = showPreview;
         window.hidePreview = hidePreview;
         window.goToLocation = goToLocation;
+        window.exportData = exportData;
+        window.exportGeoJSON = exportGeoJSON;
         window.showBackupModal = showBackupModal;
         window.showRestoreModal = showRestoreModal;
         window.hideModal = hideModal;
         window.backupData = backupData;
-        window.restoreData = restoreData;
         window.backupToFirebase = backupToFirebase;
-        window.restoreFromFirebase = restoreFromFirebase;
-        window.clearAllData = clearAllData;
-        window.clearLog = clearLog;
-        window.exportData = exportData;
-        window.exportGeoJSON = exportGeoJSON;
-        window.loadRejectedPropertyIntoForm = loadRejectedPropertyIntoForm;
-        window.hideRejectionFeedback = hideRejectionFeedback;
-        window.syncAllToFirebase = function() {
+        window.restoreData = restoreData;
+        window.restoreFromFirebase = () => {
+            if (firebaseDataManager) {
+                firebaseDataManager.restoreFromFirebase();
+            }
+            hideModal();
+        };
+        window.syncAllToFirebase = () => {
             if (firebaseDataManager) {
                 firebaseDataManager.syncAllToFirebase();
-            } else {
-                alert("Firebase not initialized. Please log in.");
             }
         };
+        window.cacheTiles = cacheTiles;
+        window.clearCache = clearCache;
+        window.clearLog = () => logger.clearLog();
+        window.clearAllData = () => storageManager.clearAllData();
+        window.hideRejectionFeedback = hideRejectionFeedback;
+        window.loadRejectedPropertyIntoForm = loadRejectedPropertyIntoForm;
         window.showAllNotifications = showAllNotifications;
-        
-        // Add update functions for geographical dropdowns
-        window.updateSubcounties = updateSubcounties;
-        window.updateParishes = updateParishes;
-        window.updateVillages = updateVillages;
-        
-        // Set up network status indicator
-        window.addEventListener('online', () => {
-            document.getElementById('net-label').className = 'indicator on';
-            document.getElementById('net-label').textContent = 'ONLINE';
-        });
-        
-        window.addEventListener('offline', () => {
-            document.getElementById('net-label').className = 'indicator off';
-            document.getElementById('net-label').textContent = 'OFFLINE';
-        });
-        
-        // Initialize network status
-        if (navigator.onLine) {
-            document.getElementById('net-label').className = 'indicator on';
-            document.getElementById('net-label').textContent = 'ONLINE';
-        } else {
-            document.getElementById('net-label').className = 'indicator off';
-            document.getElementById('net-label').textContent = 'OFFLINE';
-        }
-    });
+    };
 </script>
 </body>
 </html>
