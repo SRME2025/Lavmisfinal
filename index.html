@@ -4596,7 +4596,7 @@
             const existingRecord = await db.getRecordByPropertyId(propertyId);
             
             let isRevised = false;
-            let revisionNumber = 1;
+            let revisionNumber = 0;
             let previousStatus = '';
             let originalSubmissionId = null;
 
@@ -4605,7 +4605,7 @@
                 if (existingRecord.status === 'rejected') {
                     isRevised = true;
                     previousStatus = 'rejected';
-                    revisionNumber = (existingRecord.revisionNumber || 1) + 1;
+                    revisionNumber = (existingRecord.revisionNumber || 0) + 1;
                     originalSubmissionId = existingRecord.originalSubmissionId || existingRecord.propertyId;
                     
                     // Clear any pending rejection notifications for this property
