@@ -1755,7 +1755,7 @@
                 <div style="flex-grow: 1;">
                     <div style="display: flex; justify-content: space-between; font-size: 0.9rem; font-weight: 500;">
                         <span id="gpsStatusText">Acquiring GPS...</span>
-                        <span id="gpsAccuracy" style="color: var(--primary);">-- m</span>
+                        <span id="gpsAccuracy">-- m</span>
                     </div>
                     <div class="gps-accuracy-bar">
                         <div id="gpsAccuracyFill" class="gps-accuracy-fill" style="width: 0%; background: #e74c3c;"></div>
@@ -2209,7 +2209,9 @@
             });
         }
 
+        // ========== FIXED: getSyncQueue method with robust error handling ==========
         async getSyncQueue(status = 'pending') {
+            // Ensure status is a valid string
             if (!status || typeof status !== 'string') {
                 console.warn("⚠️ Skipping IDB fetch: Status key is invalid or undefined");
                 return [];
@@ -2220,12 +2222,34 @@
                 const store = tx.objectStore(this.syncQueueName);
                 const index = store.index('status');
                 
-                const keyRange = IDBKeyRange.only(status);
-                const request = index.getAll(keyRange);
-                request.onsuccess = () => resolve(request.result || []);
-                request.onerror = () => reject(request.error);
+                // Create a safe key range
+                let request;
+                try {
+                    const keyRange = IDBKeyRange.only(status);
+                    request = index.getAll(keyRange);
+                } catch (e) {
+                    console.error("Error creating IDBKeyRange:", e);
+                    // Fallback to getting all records and filtering manually
+                    request = index.getAll();
+                }
+                
+                request.onsuccess = () => {
+                    const results = request.result || [];
+                    // If we got all records (fallback), filter them
+                    if (!request.keyRange && status) {
+                        resolve(results.filter(item => item.status === status));
+                    } else {
+                        resolve(results);
+                    }
+                };
+                
+                request.onerror = (event) => {
+                    console.error("Error in getSyncQueue:", event.target.error);
+                    reject(event.target.error);
+                };
             });
         }
+        // ===========================================================================
 
         async updateSyncQueueItem(id, updates) {
             return new Promise((resolve, reject) => {
@@ -2722,6 +2746,7 @@
         }, 5000);
     }
 
+    // ========== FIXED: processSyncQueue with safe status check ==========
     async function processSyncQueue() {
         if (!isSystemReady || !isUserAuthenticated || isSyncing || !currentFirebaseUser) return;
         
@@ -2729,6 +2754,7 @@
         updateFirebaseStatus('syncing', 'Processing sync queue...');
         
         try {
+            // Ensure 'pending' is a valid string
             const queueItems = await db.getSyncQueue('pending');
             let syncedCount = 0;
             let failedCount = 0;
@@ -2756,9 +2782,7 @@
                         attempts: attempts
                     });
                     
-                    if (newStatus === 'pending') {
-                        // Keep in queue for retry
-                    } else {
+                    if (newStatus === 'permanent_failure') {
                         failedCount++;
                     }
                 }
@@ -2781,6 +2805,7 @@
             updateFirebaseStatus('online', 'Sync complete');
         }
     }
+    // ====================================================================
 
     async function processSyncItem(item) {
         if (!currentFirebaseUser) throw new Error('No user authenticated');
