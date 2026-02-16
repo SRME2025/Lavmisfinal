@@ -2398,13 +2398,13 @@
     // Geographical Data
     const geographicalData = [
          {
-  "DISTRICT\/CITY": "MUKONO",
+  "DISTRICT/CITY": "MUKONO",
   "SUBCOUNTY": "01 KOOME ISLANDS",
   "PARISH": "01 BUGOMBE",
   "VILLAGES": "01 BUGAZI"
  },
  {
-  "DISTRICT\/CITY": "MUKONO",
+  "DISTRICT/CITY": "MUKONO",
   "SUBCOUNTY": "09 NAMATABA TOWN COUNCIL",
   "PARISH": "44 NAMATABA B WARD",
   "VILLAGES": "07 NAKASEETA I"
@@ -2765,7 +2765,8 @@
     }
 
     // ==========================================
-    // UPDATED processSyncItem with duplicate ID detection and reassignment
+    // UPDATED processSyncItem with duplicate ID detection, reassignment,
+    // and local syncStatus update (FIXES APPLIED)
     // ==========================================
     async function processSyncItem(item) {
         if (!currentFirebaseUser) throw new Error('No user authenticated');
@@ -2785,6 +2786,7 @@
         switch(item.action) {
             case 'create':
             case 'update':
+            case 'sync':  // 👈 FIX 1: Accept 'sync' action (was missing)
                 let firebaseData = { ...record };
 
                 if (firebaseData.photo && firebaseData.photo.startsWith('data:image')) {
@@ -2812,7 +2814,7 @@
                 // ==========================================
                 // CRITICAL FIX: Duplicate ID detection and reassignment
                 // ==========================================
-                if (item.action === 'create') {
+                if (item.action === 'create' || item.action === 'sync') {
                     const duplicateCheck = await firebaseDb.collection('properties')
                         .where('propertyId', '==', firebaseData.propertyId)
                         .limit(1)
@@ -2860,6 +2862,10 @@
                     await firebaseDb.collection('properties')
                         .doc(record.firebaseId)
                         .set(firebaseData, { merge: true });
+                        
+                    // 👇 FIX 2: Update local record status for existing records
+                    record.syncStatus = 'synced';
+                    await db.saveRecord(record);
                 } else {
                     const docRef = await firebaseDb.collection('properties').add(firebaseData);
                     
