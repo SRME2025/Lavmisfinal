@@ -13,7 +13,6 @@
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
-    <!-- Add Firebase Realtime Database for connection monitoring -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
     
     <style>
@@ -2042,7 +2041,7 @@
 
         async init() {
             return new Promise((resolve, reject) => {
-                const request = indexedDB.open(this.dbName, 5); // Version 5 for new stores
+                const request = indexedDB.open(this.dbName, 5); // Version 5 for new features
 
                 request.onupgradeneeded = (event) => {
                     const db = event.target.result;
@@ -2220,6 +2219,7 @@
                 const tx = this.db.transaction([this.syncQueueName], 'readonly');
                 const store = tx.objectStore(this.syncQueueName);
                 const index = store.index('status');
+                
                 const keyRange = IDBKeyRange.only(status);
                 const request = index.getAll(keyRange);
                 request.onsuccess = () => resolve(request.result || []);
@@ -2269,8 +2269,10 @@
                 const tx = this.db.transaction([this.notificationsName], 'readonly');
                 const store = tx.objectStore(this.notificationsName);
                 const index = store.index('read');
+                
                 const keyRange = IDBKeyRange.only(false);
                 const request = index.getAll(keyRange);
+                
                 request.onsuccess = () => resolve(request.result || []);
                 request.onerror = () => reject(request.error);
             });
@@ -2295,6 +2297,39 @@
             });
         }
 
+        async clearRejectionNotifications(propertyId) {
+            return new Promise((resolve, reject) => {
+                const tx = this.db.transaction([this.notificationsName], 'readwrite');
+                const store = tx.objectStore(this.notificationsName);
+                const index = store.index('read');
+                
+                const keyRange = IDBKeyRange.only(false);
+                const request = index.getAll(keyRange);
+                
+                request.onsuccess = async () => {
+                    const notifications = request.result || [];
+                    const promises = [];
+                    
+                    notifications.forEach(notification => {
+                        if (notification.data && notification.data.propertyId === propertyId && 
+                            (notification.type === 'rejection' || notification.title.includes('Rejected'))) {
+                            notification.read = true;
+                            promises.push(new Promise((res, rej) => {
+                                const putRequest = store.put(notification);
+                                putRequest.onsuccess = () => res();
+                                putRequest.onerror = () => rej();
+                            }));
+                        }
+                    });
+                    
+                    await Promise.all(promises);
+                    resolve();
+                };
+                
+                request.onerror = () => reject(request.error);
+            });
+        }
+
         async getStorageEstimate() {
             if (navigator.storage && navigator.storage.estimate) {
                 return await navigator.storage.estimate();
@@ -2302,9 +2337,6 @@
             return null;
         }
 
-        // ==========================================
-        // AUTO-PURGE MECHANISM
-        // ==========================================
         async autoPurge(daysToKeep = 3) {
             console.log(`♻️ Starting Auto-Purge (Records older than ${daysToKeep} days)...`);
             
@@ -2334,6 +2366,7 @@
                     if (deletedCount > 0) {
                         console.log(`✅ Auto-Purged ${deletedCount} old synced records.`);
                         this.addLogEntry(`System auto-purged ${deletedCount} old records to free up space`, 'warning');
+                        
                         if (typeof refreshDataDisplay === 'function') {
                             refreshDataDisplay();
                         }
@@ -2378,7 +2411,6 @@
     let isSyncing = false;
     let syncInterval = null;
     
-    // Lifecycle Guard: Ensure system is fully initialized before processing data
     let isSystemReady = false;
     let isMapReady = false;
     let isUserAuthenticated = false;
@@ -2411,7 +2443,6 @@
  }
     ];
     
-    // Extract unique values
     const districts = [...new Set(geographicalData.map(item => item["DISTRICT/CITY"]))];
     
     // ==========================================
@@ -2419,28 +2450,19 @@
     // ==========================================
     window.onload = async function() {
         try {
-            // 1. Initialize Database
             await db.init();
-            
-            // 2. Check for old LocalStorage data and migrate
             await migrateLegacyData();
 
-            // 3. Setup Login System
             loginSystem = new LoginSystem();
             
-            // 4. Load logs
             await loadLogs();
 
-            // 5. Setup geographical dropdowns
             initializeGeographicalDropdowns();
             
-            // 6. Generate initial property ID
             generatePropertyId();
 
-            // 7. Check for notifications
             await checkNotifications();
 
-            // 8. Run Auto-Purge for records older than 3 days
             await db.autoPurge(3);
 
         } catch (error) {
@@ -2510,11 +2532,13 @@
                 .then(() => {
                     console.log('Firebase offline persistence enabled');
                     firebaseInitialized = true;
+                    
                     initAutoSyncListeners();
                 })
                 .catch((err) => {
                     console.warn('Firebase persistence error (continuing online only):', err);
                     firebaseInitialized = true;
+                    
                     initAutoSyncListeners();
                 });
                 
@@ -2528,9 +2552,6 @@
         }
     }
 
-    /**
-     * AUTOMATED SYNC ON CONNECTION
-     */
     function initAutoSyncListeners() {
         console.log("📡 Initializing Auto-Sync Listeners...");
 
@@ -2567,9 +2588,9 @@
         }
     }
 
-    // ==========================================
-    // UPDATED setupAuthStateListener with Automatic Restore
-    // ==========================================
+    /**
+     * Enhanced Auth State Listener with Silent Restore
+     */
     function setupAuthStateListener() {
         firebaseAuth.onAuthStateChanged(async (user) => {
             if (user) {
@@ -2577,20 +2598,28 @@
                 isUserAuthenticated = true;
                 console.log('✅ User authenticated:', user.email);
                 
+                // Show status panel
                 document.getElementById('firebaseStatusPanel').style.display = 'block';
                 document.getElementById('firebase-status-ind').style.display = 'inline-flex';
+                
                 updateFirebaseStatus('online', 'Logged in as ' + user.email);
                 
+                // AUTOMATIC RESTORE: Sync server IDs to prevent duplicates
+                // We call this "silently" so it doesn't interrupt the user
+                await silentRestoreFromFirebase();
+                
+                // Start sync processes
                 setupFeedbackListener();
                 
                 if (isSystemReady) {
-                    // SILENT RESTORE: Sync server IDs to prevent duplicates
-                    await silentRestoreFromFirebase();
-                    
                     setupRealtimeListener();
                     await processSyncQueue();
+                    await syncFromFirebase();
                     startPeriodicSync();
+                } else {
+                    console.log('System not ready yet, deferring Firebase operations...');
                 }
+                
             } else {
                 currentFirebaseUser = null;
                 isUserAuthenticated = false;
@@ -2598,6 +2627,8 @@
                 
                 document.getElementById('firebaseStatusPanel').style.display = 'none';
                 document.getElementById('firebase-status-ind').style.display = 'none';
+                
+                updateFirebaseStatus('offline', 'Working offline');
                 
                 stopFeedbackListener();
                 stopPeriodicSync();
@@ -2611,7 +2642,7 @@
     }
 
     /**
-     * Silent restore that only adds missing records and updates ID counter
+     * A "Safe" restore that only adds missing records and updates the ID counter
      */
     async function silentRestoreFromFirebase() {
         if (!currentFirebaseUser) return;
@@ -2630,11 +2661,13 @@
                 const localRecord = await db.getRecordByPropertyId(serverData.propertyId);
 
                 if (!localRecord) {
+                    // Only add if it doesn't exist locally to avoid overwriting pending edits
                     const record = { 
-                        ...serverData, 
                         id: Date.now() + Math.random(), 
+                        ...serverData, 
                         firebaseId: doc.id, 
-                        syncStatus: 'synced' 
+                        syncStatus: 'synced',
+                        date: serverData.date || new Date().toISOString()
                     };
                     await db.saveRecord(record);
                     addedCount++;
@@ -2643,7 +2676,8 @@
             
             if (addedCount > 0) {
                 console.log(`🔄 Auto-restored ${addedCount} records to sync ID counter.`);
-                await refreshDataDisplay();
+                addLogEntry(`Silently restored ${addedCount} records from Firebase`, 'firebase');
+                await refreshDataDisplay(); // This updates the local Property ID counter
             }
         } catch (error) {
             console.error('Silent restore failed:', error);
@@ -2688,9 +2722,6 @@
         }, 5000);
     }
 
-    // ==========================================
-    // UPDATED processSyncQueue with retry logic
-    // ==========================================
     async function processSyncQueue() {
         if (!isSystemReady || !isUserAuthenticated || isSyncing || !currentFirebaseUser) return;
         
@@ -2698,46 +2729,38 @@
         updateFirebaseStatus('syncing', 'Processing sync queue...');
         
         try {
-            const pendingItems = await db.getSyncQueue('pending');
-            const failedItems = await db.getSyncQueue('failed');
-            const queueItems = [...pendingItems, ...failedItems];
-            
-            if (queueItems.length === 0) {
-                isSyncing = false;
-                updateFirebaseStatus('online', 'All records synced');
-                return;
-            }
-
+            const queueItems = await db.getSyncQueue('pending');
             let syncedCount = 0;
             let failedCount = 0;
             
             for (const item of queueItems) {
                 try {
-                    await processSyncItem(item);
-                    await db.updateSyncQueueItem(item.id, { 
-                        status: 'completed',
-                        syncedAt: new Date().toISOString()
-                    });
-                    syncedCount++;
+                    const success = await processSyncItem(item);
+                    if (success) {
+                        await db.updateSyncQueueItem(item.id, { 
+                            status: 'completed',
+                            syncedAt: new Date().toISOString()
+                        });
+                        syncedCount++;
+                    } else {
+                        throw new Error('Sync failed');
+                    }
                 } catch (error) {
                     console.error('Sync item failed:', error);
+                    const attempts = (item.attempts || 0) + 1;
+                    const newStatus = attempts >= 3 ? 'permanent_failure' : 'pending';
                     
-                    const newAttempts = (item.attempts || 0) + 1;
+                    await db.updateSyncQueueItem(item.id, { 
+                        status: newStatus,
+                        error: error.message,
+                        attempts: attempts
+                    });
                     
-                    if (newAttempts >= 5) {
-                        await db.updateSyncQueueItem(item.id, { 
-                            status: 'permanent_failure',
-                            error: error.message,
-                            attempts: newAttempts
-                        });
+                    if (newStatus === 'pending') {
+                        // Keep in queue for retry
                     } else {
-                        await db.updateSyncQueueItem(item.id, { 
-                            status: 'failed',
-                            error: error.message,
-                            attempts: newAttempts
-                        });
+                        failedCount++;
                     }
-                    failedCount++;
                 }
             }
             
@@ -2747,7 +2770,7 @@
             }
             
             if (failedCount > 0) {
-                addLogEntry(`${failedCount} sync items failed (will retry automatically)`, 'warning');
+                addLogEntry(`${failedCount} sync items failed permanently`, 'error');
             }
             
         } catch (error) {
@@ -2755,131 +2778,120 @@
             addLogEntry('Sync queue processing failed: ' + error.message, 'error');
         } finally {
             isSyncing = false;
-            const remainingFailed = await db.getSyncQueue('failed');
-            if (remainingFailed.length > 0) {
-                updateFirebaseStatus('online', `${remainingFailed.length} items pending retry`);
-            } else {
-                updateFirebaseStatus('online', 'Sync complete');
-            }
+            updateFirebaseStatus('online', 'Sync complete');
         }
     }
 
-    // ==========================================
-    // UPDATED processSyncItem with duplicate ID detection, reassignment,
-    // and local syncStatus update (FIXES APPLIED)
-    // ==========================================
     async function processSyncItem(item) {
         if (!currentFirebaseUser) throw new Error('No user authenticated');
 
         const record = await db.getRecord(item.recordId);
-        if (!record) {
-            if (item.action === 'delete') {
-                // proceed to delete
-            } else {
-                return;
-            }
+        if (!record && item.action !== 'delete') {
+            return false;
         }
 
         const userEmail = currentFirebaseUser.email;
         const userId = currentFirebaseUser.uid;
 
-        switch(item.action) {
-            case 'create':
-            case 'update':
-            case 'sync':  // 👈 FIX 1: Accept 'sync' action (was missing)
-                let firebaseData = { ...record };
+        try {
+            switch(item.action) {
+                case 'create':
+                case 'update':
+                case 'sync':
+                    let firebaseData = { ...record };
 
-                if (firebaseData.photo && firebaseData.photo.startsWith('data:image')) {
-                    try {
-                        const storageRef = firebaseStorage.ref();
-                        const filename = `evidence/${userId}/${firebaseData.propertyId}_${Date.now()}.jpg`;
-                        const imageRef = storageRef.child(filename);
-
-                        const response = await fetch(firebaseData.photo);
-                        const blob = await response.blob();
-
-                        const metadata = { customMetadata: { propertyId: firebaseData.propertyId, uploader: userEmail } };
-                        const snapshot = await imageRef.put(blob, metadata);
-                        const downloadURL = await snapshot.ref.getDownloadURL();
-
-                        firebaseData.photo = downloadURL;
-                        firebaseData.photoPath = filename;
-
-                    } catch (uploadError) {
-                        console.error("Image upload failed:", uploadError);
-                        throw new Error("Image upload failed: " + uploadError.message);
-                    }
-                }
-
-                // ==========================================
-                // CRITICAL FIX: Duplicate ID detection and reassignment
-                // ==========================================
-                if (item.action === 'create' || item.action === 'sync') {
-                    const duplicateCheck = await firebaseDb.collection('properties')
-                        .where('propertyId', '==', firebaseData.propertyId)
-                        .limit(1)
-                        .get();
-
-                    if (!duplicateCheck.empty) {
-                        console.warn(`⚠️ Conflict: ${firebaseData.propertyId} already exists on server.`);
-                        
-                        const highestIdQuery = await firebaseDb.collection('properties')
-                            .orderBy('propertyId', 'desc')
+                    // ===== CRITICAL FIX: Check for server-side duplicates =====
+                    if (firebaseData.propertyId) {
+                        const duplicateCheck = await firebaseDb.collection('properties')
+                            .where('propertyId', '==', firebaseData.propertyId)
                             .limit(1)
                             .get();
+
+                        if (!duplicateCheck.empty) {
+                            console.warn(`⚠️ Conflict: ${firebaseData.propertyId} already exists on server.`);
                             
-                        let newPropertyId;
-                        if (!highestIdQuery.empty) {
-                            const lastId = highestIdQuery.docs[0].data().propertyId;
-                            const lastNum = parseInt(lastId.split('-')[1]);
-                            newPropertyId = `PRO-${(lastNum + 1).toString().padStart(3, '0')}`;
-                        } else {
-                            newPropertyId = `PRO-${Math.floor(Math.random() * 999).toString().padStart(3, '0')}`;
+                            // Find the highest ID on the server to generate a new one
+                            const highestIdQuery = await firebaseDb.collection('properties')
+                                .orderBy('propertyId', 'desc')
+                                .limit(1)
+                                .get();
+                                
+                            let newPropertyId;
+                            if (!highestIdQuery.empty) {
+                                const lastId = highestIdQuery.docs[0].data().propertyId;
+                                const lastNum = parseInt(lastId.split('-')[1]) || 0;
+                                newPropertyId = `PRO-${(lastNum + 1).toString().padStart(3, '0')}`;
+                            } else {
+                                newPropertyId = `PRO-${Math.floor(Math.random() * 999).toString().padStart(3, '0')}`;
+                            }
+
+                            console.log(`🔄 Re-assigning duplicate ID ${firebaseData.propertyId} to ${newPropertyId}`);
+                            firebaseData.propertyId = newPropertyId;
+                            
+                            // Update the local record so the collector knows the ID has changed
+                            record.propertyId = newPropertyId;
+                            await db.saveRecord(record); 
+                            addLogEntry(`Conflict resolved: ID updated to ${newPropertyId}`, "warning");
                         }
-
-                        console.log(`🔄 Re-assigning duplicate ID ${firebaseData.propertyId} to ${newPropertyId}`);
-                        firebaseData.propertyId = newPropertyId;
-                        
-                        record.propertyId = newPropertyId;
-                        await db.saveRecord(record);
-                        addLogEntry(`Conflict resolved: ID updated to ${newPropertyId}`, "warning");
                     }
-                }
 
-                firebaseData.userId = userId;
-                firebaseData.userEmail = userEmail;
-                
-                if (!firebaseData.officerEmail) {
-                    firebaseData.officerEmail = userEmail;
-                }
-                
-                firebaseData.lastUpdated = new Date().toISOString();
-                firebaseData.syncStatus = 'synced';
-                
-                delete firebaseData.id;
+                    if (firebaseData.photo && firebaseData.photo.startsWith('data:image')) {
+                        try {
+                            const storageRef = firebaseStorage.ref();
+                            const filename = `evidence/${userId}/${firebaseData.propertyId}_${Date.now()}.jpg`;
+                            const imageRef = storageRef.child(filename);
 
-                if (record.firebaseId) {
-                    await firebaseDb.collection('properties')
-                        .doc(record.firebaseId)
-                        .set(firebaseData, { merge: true });
-                        
-                    // 👇 FIX 2: Update local record status for existing records
-                    record.syncStatus = 'synced';
-                    await db.saveRecord(record);
-                } else {
-                    const docRef = await firebaseDb.collection('properties').add(firebaseData);
+                            const response = await fetch(firebaseData.photo);
+                            const blob = await response.blob();
+
+                            const metadata = { customMetadata: { propertyId: firebaseData.propertyId, uploader: userEmail } };
+                            const snapshot = await imageRef.put(blob, metadata);
+                            const downloadURL = await snapshot.ref.getDownloadURL();
+
+                            firebaseData.photo = downloadURL;
+                            firebaseData.photoPath = filename;
+
+                        } catch (uploadError) {
+                            console.error("Image upload failed:", uploadError);
+                            throw new Error("Image upload failed: " + uploadError.message);
+                        }
+                    }
+
+                    firebaseData.userId = userId;
+                    firebaseData.userEmail = userEmail;
                     
-                    record.firebaseId = docRef.id;
-                    record.syncStatus = 'synced';
-                    await db.saveRecord(record);
-                }
-                break;
+                    if (!firebaseData.officerEmail) {
+                        firebaseData.officerEmail = userEmail;
+                    }
+                    
+                    firebaseData.lastUpdated = new Date().toISOString();
+                    firebaseData.syncStatus = 'synced';
+                    
+                    delete firebaseData.id;
 
-            case 'delete':
-                if (record && record.firebaseId) {
-                    await firebaseDb.collection('properties').doc(record.firebaseId).delete();
-                }
-                break;
+                    if (record.firebaseId) {
+                        await firebaseDb.collection('properties')
+                            .doc(record.firebaseId)
+                            .set(firebaseData, { merge: true });
+                    } else {
+                        const docRef = await firebaseDb.collection('properties').add(firebaseData);
+                        
+                        record.firebaseId = docRef.id;
+                        record.syncStatus = 'synced';
+                        await db.saveRecord(record);
+                    }
+                    break;
+
+                case 'delete':
+                    if (record && record.firebaseId) {
+                        await firebaseDb.collection('properties').doc(record.firebaseId).delete();
+                    }
+                    break;
+            }
+            return true;
+        } catch (error) {
+            console.error('Process sync item error:', error);
+            throw error;
         }
     }
 
@@ -3101,6 +3113,56 @@
         await processSyncQueue();
     }
 
+    async function syncFromFirebase() {
+        if (!currentFirebaseUser) return;
+        
+        try {
+            const userId = currentFirebaseUser.uid;
+            const snapshot = await firebaseDb.collection('properties')
+                .where('userId', '==', userId)
+                .get();
+            
+            let newCount = 0;
+            let updateCount = 0;
+            
+            for (const doc of snapshot.docs) {
+                const remoteData = doc.data();
+                const localRecord = await db.getRecordByPropertyId(remoteData.propertyId);
+                
+                if (!localRecord) {
+                    const newRecord = {
+                        id: Date.now() + newCount,
+                        ...remoteData,
+                        firebaseId: doc.id,
+                        syncStatus: 'synced',
+                        date: remoteData.date || new Date().toISOString()
+                    };
+                    await db.saveRecord(newRecord);
+                    newCount++;
+                } else if (new Date(remoteData.lastUpdated || 0) > new Date(localRecord.lastUpdated || 0)) {
+                    const updatedRecord = {
+                        ...localRecord,
+                        ...remoteData,
+                        firebaseId: doc.id,
+                        syncStatus: 'synced',
+                        lastSynced: new Date().toISOString()
+                    };
+                    await db.saveRecord(updatedRecord);
+                    updateCount++;
+                }
+            }
+            
+            if (newCount > 0 || updateCount > 0) {
+                addLogEntry(`Synced from Firebase: ${newCount} new, ${updateCount} updated`, 'firebase');
+                await refreshDataDisplay();
+            }
+            
+        } catch (error) {
+            console.error('Sync from Firebase error:', error);
+            addLogEntry('Firebase sync failed: ' + error.message, 'error');
+        }
+    }
+
     async function restoreFromFirebase() {
         if (!currentFirebaseUser) {
             alert('Please log in to restore from Firebase');
@@ -3195,6 +3257,82 @@
             console.error('Backup to Firebase error:', error);
             alert('Failed to backup to Firebase: ' + error.message);
             addLogEntry('Firebase backup failed: ' + error.message, 'error');
+        }
+    }
+
+    async function checkNotifications() {
+        try {
+            const notifications = await db.getUnreadNotifications();
+            const notificationBadge = document.getElementById('notificationBadge');
+            const notificationCount = document.getElementById('notificationCount');
+            const notificationButton = document.getElementById('notificationButton');
+            
+            if (notifications.length > 0) {
+                notificationBadge.style.display = 'inline-flex';
+                notificationCount.textContent = notifications.length;
+                notificationButton.classList.add('has-notifications');
+            } else {
+                notificationBadge.style.display = 'none';
+                notificationButton.classList.remove('has-notifications');
+            }
+        } catch (error) {
+            console.error('Error checking notifications:', error);
+        }
+    }
+
+    function showAllNotifications() {
+        alert('Notification center - Premium feature. Notifications are stored locally and will appear here.');
+    }
+
+    async function loadLogs() {
+        const logs = await db.getLogs(50);
+        const logContainer = document.getElementById('logContent');
+        if (logContainer) {
+            logContainer.innerHTML = '';
+            logs.forEach(log => {
+                const logElement = document.createElement('div');
+                logElement.className = `log-entry ${log.type}`;
+                logElement.innerHTML = `
+                    <div class="log-time">${formatTime(log.timestamp)}</div>
+                    <div class="log-message">${log.message}</div>
+                `;
+                logContainer.appendChild(logElement);
+            });
+        }
+    }
+
+    function formatTime(timestamp) {
+        const date = new Date(timestamp);
+        return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) + 
+               ' ' + date.toLocaleDateString([], {month: 'short', day: 'numeric'});
+    }
+
+    function addLogEntry(message, type = 'info') {
+        db.addLogEntry(message, type);
+        
+        const logContainer = document.getElementById('logContent');
+        if (logContainer) {
+            const logElement = document.createElement('div');
+            logElement.className = `log-entry ${type}`;
+            logElement.innerHTML = `
+                <div class="log-time">${formatTime(new Date().toISOString())}</div>
+                <div class="log-message">${message}</div>
+            `;
+            logContainer.insertBefore(logElement, logContainer.firstChild);
+            
+            if (logContainer.children.length > 50) {
+                logContainer.removeChild(logContainer.lastChild);
+            }
+        }
+    }
+
+    function clearLog() {
+        if (confirm("Clear all log entries?")) {
+            const logContainer = document.getElementById('logContent');
+            if (logContainer) {
+                logContainer.innerHTML = '';
+            }
+            addLogEntry("Log cleared", "info");
         }
     }
 
@@ -3295,92 +3433,19 @@
     async function markNotificationRead(noteId) {
         try {
             await firebaseDb.collection('notifications').doc(noteId).update({ read: true });
+            
             document.getElementById('adminFeedbackAlert').style.display = 'none';
+            
             await checkNotifications();
+            
             addLogEntry(`Admin feedback acknowledged: ${noteId}`, 'info');
         } catch (error) {
             console.error('Error marking notification as read:', error);
         }
     }
 
-    async function checkNotifications() {
-        try {
-            const notifications = await db.getUnreadNotifications();
-            const notificationBadge = document.getElementById('notificationBadge');
-            const notificationCount = document.getElementById('notificationCount');
-            const notificationButton = document.getElementById('notificationButton');
-            
-            if (notifications.length > 0) {
-                notificationBadge.style.display = 'inline-flex';
-                notificationCount.textContent = notifications.length;
-                notificationButton.classList.add('has-notifications');
-            } else {
-                notificationBadge.style.display = 'none';
-                notificationButton.classList.remove('has-notifications');
-            }
-        } catch (error) {
-            console.error('Error checking notifications:', error);
-        }
-    }
-
-    function showAllNotifications() {
-        alert('Notification center - Premium feature. Notifications are stored locally and will appear here.');
-    }
-
-    async function loadLogs() {
-        const logs = await db.getLogs(50);
-        const logContainer = document.getElementById('logContent');
-        if (logContainer) {
-            logContainer.innerHTML = '';
-            logs.forEach(log => {
-                const logElement = document.createElement('div');
-                logElement.className = `log-entry ${log.type}`;
-                logElement.innerHTML = `
-                    <div class="log-time">${formatTime(log.timestamp)}</div>
-                    <div class="log-message">${log.message}</div>
-                `;
-                logContainer.appendChild(logElement);
-            });
-        }
-    }
-
-    function formatTime(timestamp) {
-        const date = new Date(timestamp);
-        return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) + 
-               ' ' + date.toLocaleDateString([], {month: 'short', day: 'numeric'});
-    }
-
-    function addLogEntry(message, type = 'info') {
-        db.addLogEntry(message, type);
-        
-        const logContainer = document.getElementById('logContent');
-        if (logContainer) {
-            const logElement = document.createElement('div');
-            logElement.className = `log-entry ${type}`;
-            logElement.innerHTML = `
-                <div class="log-time">${formatTime(new Date().toISOString())}</div>
-                <div class="log-message">${message}</div>
-            `;
-            logContainer.insertBefore(logElement, logContainer.firstChild);
-            
-            if (logContainer.children.length > 50) {
-                logContainer.removeChild(logContainer.lastChild);
-            }
-        }
-    }
-
-    function clearLog() {
-        if (confirm("Clear all log entries?")) {
-            const logContainer = document.getElementById('logContent');
-            if (logContainer) {
-                logContainer.innerHTML = '';
-            }
-            addLogEntry("Log cleared", "info");
-        }
-    }
-
     // ==========================================
-    // LOGIN SYSTEM
+    // LOGIN SYSTEM - FIXED AUTHENTICATION BUG
     // ==========================================
     class LoginSystem {
         constructor() {
@@ -3563,8 +3628,10 @@
             }
         }
         
+        // =============== FIXED: showMainApp now properly sets auth flags ===============
         loginSuccess(email, fromSession = false) {
             this.remainingAttempts = this.maxAttempts;
+            
             this.showMainApp(email);
             
             if (!fromSession) {
@@ -3574,11 +3641,31 @@
         
         showMainApp(email) {
             document.getElementById('loginModal').style.display = 'none';
+            
             document.getElementById('mainContent').style.display = 'flex';
+            
             document.getElementById('loggedInUser').textContent = email;
+            
+            // CRITICAL FIX: Explicitly set global auth flags and update UI
+            isUserAuthenticated = true;
+            
+            // Also update the status indicator in the UI
+            const netLabel = document.getElementById('net-label');
+            if (netLabel) {
+                netLabel.textContent = 'ONLINE';
+                netLabel.className = 'indicator on';
+            }
+            
+            // Update Firebase status panel if user exists
+            if (currentFirebaseUser) {
+                document.getElementById('firebaseStatusPanel').style.display = 'block';
+                document.getElementById('firebase-status-ind').style.display = 'inline-flex';
+                updateFirebaseStatus('online', 'Logged in as ' + email);
+            }
             
             initializeApp();
         }
+        // ============================================================================
         
         initiateLogout() {
             if (confirm("Are you sure you want to logout?")) {
@@ -3624,11 +3711,17 @@
     // ==========================================
     function initializeApp() {
         initMap();
+        
         startGPS();
+        
         refreshDataDisplay();
+        
         updateStorageUsage();
+        
         setLocationMode('gps');
+        
         setupMapHandlers();
+        
         updateSyncStats();
         
         isSystemReady = true;
@@ -3637,9 +3730,9 @@
         if (isUserAuthenticated && currentFirebaseUser) {
             console.log("Starting deferred Firebase operations...");
             setTimeout(async () => {
-                await silentRestoreFromFirebase();
                 setupRealtimeListener();
                 await processSyncQueue();
+                await syncFromFirebase();
                 startPeriodicSync();
             }, 1000);
         }
@@ -3647,9 +3740,6 @@
         addLogEntry("LAVMIS Pro application started", "success");
     }
 
-    // ==========================================
-    // OFFLINE MAPS WITH CACHING
-    // ==========================================
     function initMap() {
         map = L.map('map', { 
             zoomControl: false,
@@ -4187,6 +4277,7 @@
             selectElement.style.display = 'block';
             manualInput.style.display = 'none';
             selectElement.disabled = false;
+            
             manualInput.value = '';
             
             if (fieldType === 'districtCity') {
@@ -4200,6 +4291,7 @@
             selectElement.style.display = 'none';
             manualInput.style.display = 'block';
             selectElement.disabled = true;
+            
             selectElement.value = '';
             
             if (fieldType === 'districtCity') {
@@ -4291,7 +4383,7 @@
     }
 
     // ==========================================
-    // EVIDENCE PHOTO HANDLING WITH CLIENT-SIDE COMPRESSION
+    // EVIDENCE PHOTO HANDLING
     // ==========================================
     function capturePhoto() {
         document.getElementById('photoInput').click();
@@ -4356,15 +4448,16 @@
     }
 
     // ==========================================
-    // UPDATED saveData FUNCTION with auth hardening and rejection notification clearing
+    // DATA SAVING FUNCTION - FIXED FOR REJECTION NOTIFICATIONS & AUTH
     // ==========================================
     async function saveData() {
+        // FORCE CHECK: If global currentFirebaseUser is null, check the SDK directly
         let activeUser = currentFirebaseUser;
-        if (!activeUser && firebase.auth().currentUser) {
+        if (!activeUser && firebase.auth && firebase.auth().currentUser) {
             activeUser = firebase.auth().currentUser;
-            currentFirebaseUser = activeUser;
+            currentFirebaseUser = activeUser; // Restore global state
         }
-
+        
         let position;
         let positionSource;
         let accuracy = null;
@@ -4477,21 +4570,25 @@
         try {
             const existingRecord = await db.getRecordByPropertyId(propertyId);
             
-            if (existingRecord && existingRecord.syncStatus === 'synced') {
-                 addLogEntry(`Updating previously synced record: ${propertyId}`, "warning");
-            }
-
             let isRevised = false;
             let revisionNumber = 1;
             let previousStatus = '';
             let originalSubmissionId = null;
 
             if (existingRecord) {
+                // If the record was previously rejected, clear rejection status and notifications
                 if (existingRecord.status === 'rejected') {
                     isRevised = true;
                     previousStatus = 'rejected';
                     revisionNumber = (existingRecord.revisionNumber || 1) + 1;
                     originalSubmissionId = existingRecord.originalSubmissionId || existingRecord.propertyId;
+                    
+                    // Clear any pending rejection notifications for this property
+                    await db.clearRejectionNotifications(propertyId);
+                    
+                    // Hide rejection modal if it's showing
+                    document.getElementById('rejectionFeedback').style.display = 'none';
+                    document.getElementById('rejectionNotification').style.display = 'none';
                 } else {
                     isRevised = existingRecord.isRevised || false;
                     revisionNumber = existingRecord.revisionNumber || 1;
@@ -4500,10 +4597,12 @@
                 }
             }
             
-            if (existingRecord && !confirm(`Property ID ${propertyId} already exists. Do you want to update it?`)) {
-                saveBtn.disabled = false;
-                saveBtn.innerHTML = '<i class="fa-solid fa-save"></i> SAVE PROPERTY RECORD';
-                return;
+            if (existingRecord && existingRecord.status !== 'rejected') {
+                if (!confirm(`Property ID ${propertyId} already exists. Do you want to update it?`)) {
+                    saveBtn.disabled = false;
+                    saveBtn.innerHTML = '<i class="fa-solid fa-save"></i> SAVE PROPERTY RECORD';
+                    return;
+                }
             }
 
             const record = {
@@ -4533,61 +4632,52 @@
                 gpsAccuracy: accuracy ? accuracy.toFixed(1) : null,
                 officerName: officerName,
                 officerEmail: activeUser ? activeUser.email : 'offline_user',
-                officerId: activeUser ? activeUser.uid : 'offline_id',
+                userId: activeUser ? activeUser.uid : 'offline_id',
+                
                 date: new Date().toISOString(),
                 formattedDate: new Date().toLocaleDateString('en-US', {
                     year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
                 }),
+                
                 status: 'pending',
                 validationStatus: 'pending',
+                
                 isRevised: isRevised,
                 revisionNumber: revisionNumber,
                 previousStatus: previousStatus,
                 originalSubmissionId: originalSubmissionId,
-                syncStatus: 'pending',
-                firebaseId: existingRecord ? existingRecord.firebaseId : null
+                
+                syncStatus: activeUser ? 'pending' : 'pending', // Always pending to trigger sync queue when online
+                firebaseId: existingRecord ? existingRecord.firebaseId : null,
+                
+                // Clear any rejection-related fields
+                rejectionReason: null,
+                rejectionFeedback: null
             };
 
             await db.saveRecord(record);
             
-            await db.addToSyncQueue(record.id, 'sync', record);
-
-            // ==========================================
-            // NEW FIX: Clear Rejection Notification if Resubmitting
-            // ==========================================
-            if (previousStatus === 'rejected') {
-                try {
-                    const notifications = await db.getUnreadNotifications();
-                    const relatedNotes = notifications.filter(n => 
-                        (n.data && n.data.propertyId === propertyId) || 
-                        (n.title && n.title.includes('Rejected') && n.message && n.message.includes(propertyId))
-                    );
-                    
-                    for (const note of relatedNotes) {
-                        await db.markNotificationAsRead(note.id);
-                    }
-                    
-                    await checkNotifications();
-                    
-                    document.getElementById('rejectionNotification').style.display = 'none';
-                    
-                } catch (err) {
-                    console.error("Error clearing rejection notifications:", err);
-                }
+            if (activeUser) {
+                await db.addToSyncQueue(record.id, 'sync', record);
             }
-            // -------------------------------------------------
 
             clearForm();
+            
             await updatePropertyIdCounter();
+            
             if (locationMode === 'manual') {
                 clearManualPoint();
             }
+
             await refreshDataDisplay();
+            
             await updateStorageUsage();
             
-            if (activeUser) {
+            if (activeUser && navigator.onLine) {
                 await processSyncQueue();
             }
+
+            await checkNotifications();
 
             alert(`✅ Property record saved successfully!\n📋 ID: ${record.propertyId}\n🏠 Name: ${record.propertyName || 'Not provided'}\n📍 Location: ${record.coordinates}\n💰 Rate: $${record.rate}/Ha`);
             
@@ -4650,8 +4740,11 @@
         document.getElementById('recordCount').textContent = `${records.length} records`;
         
         updateTable(records);
+        
         updateMapMarkers(records);
+        
         await updatePropertyIdCounter();
+        
         await updateSyncStats();
     }
 
@@ -5009,7 +5102,7 @@
             const record = await db.getRecord(id);
             await db.deleteRecord(id);
             
-            if (record.firebaseId) {
+            if (record.firebaseId && currentFirebaseUser) {
                 await db.addToSyncQueue(id, 'delete', record);
             }
             
@@ -5017,7 +5110,7 @@
             await refreshDataDisplay();
             addLogEntry("Record deleted", "warning");
             
-            if (currentFirebaseUser) {
+            if (currentFirebaseUser && navigator.onLine) {
                 await processSyncQueue();
             }
         }
@@ -5247,7 +5340,7 @@
     }
 
     // ==========================================
-    // OFFLINE MAPS - REAL CACHING
+    // OFFLINE MAPS CACHING
     // ==========================================
     function cacheTiles() {
         if (!navigator.onLine) {
@@ -5415,7 +5508,10 @@
             const record = await db.getRecordByPropertyId(propertyId);
             if (record) {
                 await loadRecordIntoForm(record.id);
+                
                 modal.style.display = 'none';
+                document.getElementById('rejectionNotification').style.display = 'none';
+                
                 alert(`Property ${propertyId} loaded into form. Please make corrections and resubmit.`);
                 addLogEntry(`Rejected property ${propertyId} loaded into form for editing`, "info");
             } else {
@@ -5466,6 +5562,7 @@
     window.updateVillages = updateVillages;
     window.toggleManualEntry = toggleManualEntry;
     window.markNotificationRead = markNotificationRead;
+    window.deleteRecord = deleteRecord;
 
 </script>
 </body>
